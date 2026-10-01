@@ -20,3 +20,6 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.16.9",
 ]
+survey = [
+    "websockets>=17.1",
+]
