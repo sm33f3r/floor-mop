@@ -64,18 +64,42 @@ def _load_toml(path: Path) -> dict[str, Any]:
             return tomllib.load(f)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"Malformed TOML in {path}: {exc}") from None
+    except (UnicodeDecodeError, OSError) as exc:
+        # Report only the exception type: its message can contain file bytes.
+        raise ConfigError(f"Cannot read {path}: {type(exc).__name__}") from None
+
+
+def _env_conflict(first: str, second: str) -> ConfigError:
+    """Build a ConfigError naming two conflicting env vars (never their values)."""
+    return ConfigError(
+        f"Conflicting environment variables: {first} and {second} "
+        "set overlapping configuration keys"
+    )
 
 
 def _env_overrides(env: Mapping[str, str]) -> dict[str, Any]:
-    """Build a nested override dict from FLOOR_MOP__-prefixed env vars."""
+    """Build a nested override dict from FLOOR_MOP__-prefixed env vars.
+
+    Raises ConfigError if one variable's key path is a prefix of another's,
+    regardless of the order in which the variables appear.
+    """
     overrides: dict[str, Any] = {}
+    # First env var name that claimed each key path (leaf or intermediate).
+    owners: dict[tuple[str, ...], str] = {}
     for name, value in env.items():
         if not name.startswith(_ENV_PREFIX):
             continue
-        path = [part.lower() for part in name[len(_ENV_PREFIX) :].split("__")]
+        path = tuple(part.lower() for part in name[len(_ENV_PREFIX) :].split("__"))
         node = overrides
-        for part in path[:-1]:
-            node = node.setdefault(part, {})
+        for depth, part in enumerate(path[:-1], start=1):
+            child = node.setdefault(part, {})
+            if not isinstance(child, dict):
+                raise _env_conflict(owners[path[:depth]], name) from None
+            owners.setdefault(path[:depth], name)
+            node = child
+        if path[-1] in node:
+            raise _env_conflict(owners[path], name) from None
+        owners[path] = name
         node[path[-1]] = value
     return overrides
 
@@ -98,7 +122,10 @@ def load_settings(
 
     if config_dir is None:
         env_dir = env.get("FLOOR_MOP_CONFIG_DIR")
-        config_dir = Path(env_dir) if env_dir is not None else Path("config")
+        if env_dir is not None and env_dir.strip():
+            config_dir = Path(env_dir)
+        else:
+            config_dir = Path("config")
 
     default_path = config_dir / "default.toml"
     if not default_path.is_file():

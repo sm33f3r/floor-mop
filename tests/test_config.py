@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import traceback
 from pathlib import Path
 
@@ -349,3 +350,175 @@ def test_console_rejects_non_boolean(tmp_path: Path) -> None:
         )
 
     assert "not-a-bool" not in str(exc_info.value)
+
+
+def _capture_config_error(config_dir: Path, env: dict[str, str]) -> ConfigError:
+    """Call load_settings and return the ConfigError it raises."""
+    exc: ConfigError | None = None
+    try:
+        load_settings(config_dir=config_dir, env=env)
+    except ConfigError as caught:
+        exc = caught
+    assert exc is not None
+    return exc
+
+
+_CONFLICT_SHORT = "FLOOR_MOP__LOGGING"
+_CONFLICT_LONG = "FLOOR_MOP__LOGGING__LEVEL"
+_CONFLICT_ENVS = {
+    "short_first": {_CONFLICT_SHORT: SECRET, _CONFLICT_LONG: "DEBUG"},
+    "long_first": {_CONFLICT_LONG: "DEBUG", _CONFLICT_SHORT: SECRET},
+}
+
+
+@pytest.mark.parametrize("order", list(_CONFLICT_ENVS))
+def test_env_prefix_conflict_raises_config_error(tmp_path: Path, order: str) -> None:
+    """A var whose path is a prefix of another raises ConfigError in either order."""
+    config_dir = _make_config_dir(tmp_path)
+
+    exc = _capture_config_error(config_dir, _CONFLICT_ENVS[order])
+
+    assert _CONFLICT_SHORT in str(exc)
+    assert _CONFLICT_LONG in str(exc)
+
+
+@pytest.mark.parametrize("order", list(_CONFLICT_ENVS))
+def test_env_prefix_conflict_does_not_leak_values(tmp_path: Path, order: str) -> None:
+    """Conflict errors carry no env values and no chained cause in the traceback."""
+    config_dir = _make_config_dir(tmp_path)
+
+    exc = _capture_config_error(config_dir, _CONFLICT_ENVS[order])
+
+    assert SECRET not in str(exc)
+    assert "DEBUG" not in str(exc)
+    assert SECRET not in "".join(traceback.format_exception(exc))
+    assert exc.__cause__ is None
+    assert exc.__suppress_context__ is True
+
+
+def test_env_deeper_conflict_names_both_variables(tmp_path: Path) -> None:
+    """A conflict below the first level names both variables involved."""
+    config_dir = _make_config_dir(tmp_path)
+    env = {
+        "FLOOR_MOP__A__B__C": SECRET,
+        "FLOOR_MOP__A__B": SECRET,
+    }
+
+    exc = _capture_config_error(config_dir, env)
+
+    assert "FLOOR_MOP__A__B__C" in str(exc)
+    assert "FLOOR_MOP__A__B" in str(exc)
+    assert SECRET not in str(exc)
+
+
+def test_env_sibling_variables_do_not_conflict(tmp_path: Path) -> None:
+    """Sibling vars under the same parent both apply."""
+    config_dir = _make_config_dir(tmp_path)
+
+    settings = load_settings(
+        config_dir=config_dir,
+        env={
+            "FLOOR_MOP__LOGGING__LEVEL": "DEBUG",
+            "FLOOR_MOP__LOGGING__CONSOLE": "false",
+        },
+    )
+
+    assert settings.logging.level == "DEBUG"
+    assert settings.logging.console is False
+
+
+_BAD_BYTES = b'[logging]\nlevel = "\xff\xfe"\n'
+
+
+def test_invalid_utf8_default_toml_raises_config_error(tmp_path: Path) -> None:
+    """Invalid UTF-8 in default.toml raises ConfigError naming the path only."""
+    config_dir = _make_config_dir(tmp_path)
+    (config_dir / "default.toml").write_bytes(_BAD_BYTES)
+
+    exc = _capture_config_error(config_dir, {})
+
+    assert str(config_dir / "default.toml") in str(exc)
+    assert "UnicodeDecodeError" in str(exc)
+    assert "\xff" not in str(exc)
+    assert "\ufffd" not in str(exc)
+    assert exc.__cause__ is None
+    assert exc.__suppress_context__ is True
+
+
+def test_invalid_utf8_local_toml_raises_config_error(tmp_path: Path) -> None:
+    """Invalid UTF-8 in local.toml raises ConfigError naming the path only."""
+    config_dir = _make_config_dir(tmp_path)
+    (config_dir / "local.toml").write_bytes(_BAD_BYTES)
+
+    exc = _capture_config_error(config_dir, {})
+
+    assert str(config_dir / "local.toml") in str(exc)
+    assert "UnicodeDecodeError" in str(exc)
+    assert "\xff" not in str(exc)
+    assert "\ufffd" not in str(exc)
+    assert exc.__cause__ is None
+    assert exc.__suppress_context__ is True
+
+
+@pytest.mark.skipif(
+    os.getuid() == 0, reason="root can read files regardless of chmod permissions"
+)
+def test_unreadable_toml_raises_config_error(tmp_path: Path) -> None:
+    """An unreadable default.toml raises ConfigError naming path and exception type."""
+    config_dir = _make_config_dir(tmp_path)
+    default_path = config_dir / "default.toml"
+    default_path.chmod(0o000)
+    try:
+        exc = _capture_config_error(config_dir, {})
+    finally:
+        default_path.chmod(0o644)
+
+    assert str(default_path) in str(exc)
+    assert "PermissionError" in str(exc)
+    assert exc.__cause__ is None
+    assert exc.__suppress_context__ is True
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_blank_config_dir_env_falls_back_to_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, blank: str
+) -> None:
+    """An empty or whitespace-only FLOOR_MOP_CONFIG_DIR means 'config', not '.'."""
+    _make_config_dir(tmp_path, local_content='[logging]\nlevel = "DEBUG"\n')
+    monkeypatch.chdir(tmp_path)
+
+    settings = load_settings(config_dir=None, env={"FLOOR_MOP_CONFIG_DIR": blank})
+
+    assert settings.logging.level == "DEBUG"
+
+
+def test_blank_config_dir_env_ignores_cwd_default_toml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A blank FLOOR_MOP_CONFIG_DIR does not pick up ./default.toml from the cwd."""
+    _make_config_dir(tmp_path)
+    (tmp_path / "default.toml").write_text(
+        DEFAULT_TOML.replace('"INFO"', '"ERROR"'), encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    settings = load_settings(config_dir=None, env={"FLOOR_MOP_CONFIG_DIR": ""})
+
+    assert settings.logging.level == "INFO"
+
+
+def test_non_empty_config_dir_env_still_wins_over_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-empty FLOOR_MOP_CONFIG_DIR is used instead of the 'config' fallback."""
+    _make_config_dir(tmp_path / "cwd")
+    custom_dir = _make_config_dir(
+        tmp_path / "custom", local_content='[logging]\nlevel = "WARNING"\n'
+    )
+    monkeypatch.chdir(tmp_path / "cwd")
+
+    settings = load_settings(
+        config_dir=None, env={"FLOOR_MOP_CONFIG_DIR": str(custom_dir)}
+    )
+
+    assert settings.logging.level == "WARNING"
