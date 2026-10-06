@@ -16,7 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 UA = "floor-mop-survey/0.1"
@@ -85,7 +85,7 @@ def inhibit_sleep(on: bool) -> str:
         import ctypes
         ctypes.windll.kernel32.SetThreadExecutionState(0x80000001 if on else 0x80000000)
         return "windows_execution_state"
-    except Exception:
+    except Exception:  # noqa: BLE001
         return "failed"
 
 
@@ -106,7 +106,7 @@ def http(method: str, url: str, body: object | None = None, timeout: float = 20.
     except urllib.error.HTTPError as exc:
         status, raw = exc.code, exc.read()
         hdrs = {k.lower(): v for k, v in (exc.headers or {}).items()}
-    except Exception as exc:  # network or TLS failure
+    except Exception as exc:  # network or TLS failure  # noqa: BLE001
         err = type(exc).__name__
     ms = (time.perf_counter() - t0) * 1000
     try:
@@ -120,7 +120,7 @@ def rl_headers(r: dict) -> dict[str, str]:
     """Rate-limit related header values, printable ones only."""
     out: dict[str, str] = {}
     for k, v in r["headers"].items():
-        if k.startswith(("x-ratelimit", "x-rate-limit", "ratelimit")) or k == "retry-after":
+        if k.startswith(("x-ratelimit", "x-rate-limit", "ratelimit")) or k == "retry-after":  # noqa: SIM102
             if re.fullmatch(r"[ -~]{1,80}", v or ""):
                 out[k] = v
     return out
@@ -416,7 +416,7 @@ def jup_control_call() -> dict:
 
 
 def run(out, lines: list[str], mode: str) -> int:
-    t_start = datetime.now(timezone.utc)
+    t_start = datetime.now(UTC)
     out(f"START {t_start.isoformat()} hosts=api.mainnet-beta.solana.com,lite-api.jup.ag,api.rugcheck.xyz")
     out(f"SLEEP_INHIBIT {mode}")
 
@@ -531,7 +531,7 @@ def run(out, lines: list[str], mode: str) -> int:
     out("RPC_ERRORS " + ", ".join(f"{m}/http{s}/code{c}:{k}" for (m, s, c), k in RPC_ERRS.items()))
     out("BLOCKED " + (", ".join(f"{k}:{v}" for k, v in BLOCKED.items()) or "none"))
     out(f"REQUESTS rpc={COUNT['rpc']} jupiter={COUNT['jup']} rugcheck={COUNT['rc']}")
-    out(f"END {datetime.now(timezone.utc).isoformat()}")
+    out(f"END {datetime.now(UTC).isoformat()}")
 
     path = Path(__file__).resolve().parent.parent / "data" / "survey" / f"jupiter_rpc_{t_start:%Y%m%dT%H%M%SZ}.txt"
     path.parent.mkdir(parents=True, exist_ok=True)
