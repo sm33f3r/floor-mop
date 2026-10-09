@@ -1,0 +1,15 @@
+{
+  "name": "GRIMPLE",
+  "symbol": "GRIMPLE",
+  "description": "Parking lots at 3 a.m. Vending machines left unlocked. GRIMPLE drifts through the gaps in the system and leaves no forwarding address.",
+  "image": "https://raw.githubusercontent.com/sm33f3r/floor-mop/6e0551293fd038de2b966f34202b6763f81ff2e7/assets/grimple_logo.png",
+  "properties": {
+    "files": [
+      {
+        "uri": "https://raw.githubusercontent.com/sm33f3r/floor-mop/6e0551293fd038de2b966f34202b6763f81ff2e7/assets/grimple_logo.png",
+        "type": "image/png"
+      }
+    ],
+    "category": "image"
+  }
+}
